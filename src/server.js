@@ -9,3 +9,4 @@ app.use(express_1.default.json());
 app.use("/relatorios", relatorios_1.default);
 var PORT = process.env.PORT || 3000;
 app.listen(PORT, function () { return console.log("Servidor rodando na porta ".concat(PORT)); });
+

@@ -8,7 +8,6 @@ WORKDIR /app
 # Copia os arquivos essenciais primeiro (melhor para cache)
 COPY package*.json ./
 COPY tsconfig*.json ./
-
 # Instala dependências
 RUN npm install
 
@@ -28,7 +27,6 @@ WORKDIR /app
 # Copia apenas os arquivos necessários da build anterior
 COPY --from=builder /app/dist ./dist
 COPY package*.json ./
-
 # Instala apenas as dependências de produção
 RUN npm install --omit=dev
 
