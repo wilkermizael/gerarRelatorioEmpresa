@@ -237,8 +237,6 @@ router.post("/empresas/filtrar", async (req: Request, res: Response) => {
   }
 });
 
-
-
 router.post("/empresas", async (req: Request, res: Response) => {
   try {
     const { empresas, relatorioEmpresa, formato } = req.body;
@@ -475,4 +473,343 @@ else {
   }
 });
 
+router.post("/sindicalizados", async (req: Request, res: Response) => {
+  try {
+    const { sindicalizados, escolhaColunaTabela } = req.body;
+
+    if (!Array.isArray(sindicalizados)) {
+      return res.status(400).json({ error: "Lista de sindicalizados inválida." });
+    }
+
+    if (!escolhaColunaTabela || typeof escolhaColunaTabela !== "object") {
+      return res.status(400).json({ error: "Configuração de colunas inválida." });
+    }
+
+    // Seleciona apenas colunas onde o usuário marcou TRUE
+    const colunasSelecionadas = Object.keys(escolhaColunaTabela).filter(
+      (col) => escolhaColunaTabela[col] === true
+    );
+
+    if (colunasSelecionadas.length === 0) {
+      return res.status(400).json({ error: "Nenhuma coluna selecionada." });
+    }
+
+    //
+    // ──────────────────────────────────────────
+    //   PREPARAÇÃO DO ARQUIVO
+    // ──────────────────────────────────────────
+    //
+
+    const outputDir = path.join(__dirname, "../../uploads");
+    if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir);
+
+    const fileName = `relatorio_sindicalizados_${Date.now()}.xlsx`;
+    const filePath = path.join(outputDir, fileName);
+
+    //
+    // ──────────────────────────────────────────
+    //   GERAR XLSX (MESMO PADRÃO PROFISSIONAL)
+    // ──────────────────────────────────────────
+    //
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet("Sindicalizados");
+
+    // Função para formatar os headers
+    const formatHeader = (key: string) => {
+  if (key === "status") return "Status (Ativo / Inativo)";
+
+  return key
+    .replace(/_/g, " ")
+    .toLowerCase()
+    .replace(/\b\w/g, (l) => l.toUpperCase());
+};
+
+
+    //
+    // CABEÇALHO DA TABELA
+    //
+    const headerRow = sheet.addRow(colunasSelecionadas.map((c) => formatHeader(c)));
+    headerRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    headerRow.alignment = { vertical: "middle", horizontal: "center" };
+    headerRow.height = 22;
+
+    headerRow.eachCell((cell) => {
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "4472C4" },
+      };
+      cell.border = {
+        top: { style: "thin", color: { argb: "FFCCCCCC" } },
+        bottom: { style: "thin", color: { argb: "FFCCCCCC" } },
+        left: { style: "thin", color: { argb: "FFCCCCCC" } },
+        right: { style: "thin", color: { argb: "FFCCCCCC" } },
+      };
+    });
+
+    //
+    // LINHAS DE DADOS
+    //
+    sindicalizados.forEach((item: any) => {
+      const linha = colunasSelecionadas.map((col) => {
+        let valor = item[col] ?? "";
+
+        if (valor === true) valor = "Sim";
+        if (valor === false) valor = "Não";
+
+        return String(valor);
+      });
+
+      const row = sheet.addRow(linha);
+
+      row.eachCell((cell) => {
+        cell.border = {
+          top: { style: "thin", color: { argb: "FFD9D9D9" } },
+          bottom: { style: "thin", color: { argb: "FFD9D9D9" } },
+          left: { style: "thin", color: { argb: "FFD9D9D9" } },
+          right: { style: "thin", color: { argb: "FFD9D9D9" } },
+        };
+        cell.alignment = { vertical: "middle", horizontal: "left", wrapText: true };
+      });
+    });
+
+    //
+    // AJUSTAR LARGURA DAS COLUNAS
+    //
+    colunasSelecionadas.forEach((col, i) => {
+      const maxLength = Math.max(
+        formatHeader(col).length,
+        ...sindicalizados.map((i: any) => String(i[col] ?? "").length)
+      );
+
+      sheet.getColumn(i + 1).width = Math.min(Math.max(maxLength * 0.9, 12), 35);
+    });
+
+    //
+    // TÍTULO NO TOPO
+    //
+    sheet.insertRow(1, ["SENALBA MG - Relatório de Sindicalizados"]);
+    const titleRow = sheet.getRow(1);
+
+    titleRow.font = { bold: true, size: 16, color: { argb: "FF1F4E78" } };
+    sheet.mergeCells(1, 1, 1, colunasSelecionadas.length);
+    titleRow.alignment = { horizontal: "center" };
+
+    //
+    // GERAR ARQUIVO
+    //
+    await workbook.xlsx.writeFile(filePath);
+
+    //
+    // ENVIAR ARQUIVO
+    //
+    return res.download(filePath, fileName, (err) => {
+      if (err) console.error("Erro ao enviar:", err);
+      fs.unlinkSync(filePath);
+    });
+
+  } catch (error) {
+    console.error("Erro no relatório:", error);
+    return res.status(500).json({ error: "Erro ao gerar relatório." });
+  }
+});
+router.post("/sindicalizados/filtro", async (req: Request, res: Response) => {
+  try {
+    const { sindicalizados, escolhaColunaTabela, filtros } = req.body;
+
+    console.log("BODY COMPLETO RECEBIDO:", JSON.stringify(req.body, null, 2));
+
+    if (!Array.isArray(sindicalizados)) {
+      return res.status(400).json({ error: "Lista de sindicalizados inválida." });
+    }
+
+    if (!escolhaColunaTabela || typeof escolhaColunaTabela !== "object") {
+      return res.status(400).json({ error: "Configuração de colunas inválida." });
+    }
+
+    //
+    // ──────────────────────────────────────────
+    //   APLICAR FILTROS (SE EXISTIREM)
+    // ──────────────────────────────────────────
+    //
+
+    //
+// ──────────────────────────────────────────
+//   APLICAR FILTROS (COM id_empresa)
+// ──────────────────────────────────────────
+
+let listaFiltrada = [...sindicalizados];
+
+if (filtros && typeof filtros === "object") {
+
+  const normalizar = (v: any) =>
+    String(v ?? "").trim().toLowerCase();
+
+  listaFiltrada = listaFiltrada.filter((item) => {
+    const itemStatus = normalizar(item.status);
+    const itemEmpresaId = String(item.id_empresa ?? "");
+    const itemUnidade = normalizar(item.unidade);
+    const itemTipo = normalizar(item.tipo_desconto);
+
+    // STATUS → ativo / inativo
+    if (filtros.status) {
+      const filtroStatus = normalizar(filtros.status);
+      if (itemStatus !== filtroStatus) return false;
+    }
+
+    // FILTRAR POR ID DA EMPRESA
+    if (filtros.id_empresa) {
+      const filtroEmpresaId = String(filtros.id_empresa);
+      if (itemEmpresaId !== filtroEmpresaId) return false;
+    }
+
+    // UNIDADE
+    if (filtros.unidade) {
+      if (itemUnidade !== normalizar(filtros.unidade)) return false;
+    }
+
+    // TIPO DE DESCONTO
+    if (filtros.tipo_desconto) {
+      if (itemTipo !== normalizar(filtros.tipo_desconto)) return false;
+    }
+
+    return true;
+  });
+}
+
+//
+// Se não encontrar nada → retorna erro
+//
+if (listaFiltrada.length === 0) {
+  return res.status(404).json({
+    error: "Nenhum resultado encontrado após aplicar filtros."
+  });
+}
+
+    //
+    // ──────────────────────────────────────────
+    //   SELEÇÃO DAS COLUNAS
+    // ──────────────────────────────────────────
+    //
+
+    const colunasSelecionadas = Object.keys(escolhaColunaTabela).filter(
+      (col) => escolhaColunaTabela[col] === true
+    );
+
+    if (colunasSelecionadas.length === 0) {
+      return res.status(400).json({ error: "Nenhuma coluna selecionada." });
+    }
+
+    //
+    // ──────────────────────────────────────────
+    //   PREPARAÇÃO DO XLSX
+    // ──────────────────────────────────────────
+    //
+
+    const outputDir = path.join(__dirname, "../../uploads");
+    if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir);
+
+    const fileName = `relatorio_sindicalizados_${Date.now()}.xlsx`;
+    const filePath = path.join(outputDir, fileName);
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet("Sindicalizados");
+
+    const formatHeader = (key: string) =>
+      key
+        .replace(/_/g, " ")
+        .toLowerCase()
+        .replace(/\b\w/g, (l) => l.toUpperCase());
+
+    //
+    // CABEÇALHO
+    //
+    const headerRow = sheet.addRow(colunasSelecionadas.map((c) => formatHeader(c)));
+    headerRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    headerRow.alignment = { vertical: "middle", horizontal: "center" };
+    headerRow.height = 22;
+
+    headerRow.eachCell((cell) => {
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "4472C4" },
+      };
+      cell.border = {
+        top: { style: "thin" },
+        bottom: { style: "thin" },
+        left: { style: "thin" },
+        right: { style: "thin" },
+      };
+    });
+
+    //
+    // DADOS
+    //
+    listaFiltrada.forEach((item: any) => {
+  const linha = colunasSelecionadas.map((col) => {
+    if (col === "status") {
+      // status booleano → string bonita
+      return item.status === true ? "Ativo" : "Inativo";
+    }
+
+    return String(item[col] ?? "");
+  });
+
+  const row = sheet.addRow(linha);
+
+  row.eachCell((cell) => {
+    cell.border = {
+      top: { style: "thin" },
+      bottom: { style: "thin" },
+      left: { style: "thin" },
+      right: { style: "thin" },
+    };
+    cell.alignment = {
+      vertical: "middle",
+      horizontal: "left",
+      wrapText: true
+    };
+  });
+});
+
+    //
+    // AJUSTE DE LARGURA
+    //
+    colunasSelecionadas.forEach((col, i) => {
+      const maxLength = Math.max(
+        formatHeader(col).length,
+        ...listaFiltrada.map((i: any) => String(i[col] ?? "").length)
+      );
+      sheet.getColumn(i + 1).width = Math.min(Math.max(maxLength * 0.9, 12), 35);
+    });
+
+    //
+    // TÍTULO
+    //
+    sheet.insertRow(1, ["SENALBA MG - Relatório de Sindicalizados"]);
+    const titleRow = sheet.getRow(1);
+    titleRow.font = { bold: true, size: 16, color: { argb: "FF1F4E78" } };
+    sheet.mergeCells(1, 1, 1, colunasSelecionadas.length);
+    titleRow.alignment = { horizontal: "center" };
+
+    //
+    // GERAR E ENVIAR
+    //
+    await workbook.xlsx.writeFile(filePath);
+
+    return res.download(filePath, fileName, (err) => {
+      if (err) console.error("Erro ao enviar:", err);
+      fs.unlinkSync(filePath);
+    });
+
+  } catch (error) {
+    console.error("Erro no relatório:", error);
+    return res.status(500).json({ error: "Erro ao gerar relatório." });
+  }
+});
+
+
 export default router;
+
