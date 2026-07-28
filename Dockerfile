@@ -1,15 +1,16 @@
 # =========================
 # 🏗️  Etapa 1: Build
 # =========================
-FROM node:22 AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-# Copia os arquivos essenciais primeiro (melhor para cache)
+# Copia os arquivos essenciais primeiro para aproveitar o cache de camadas
 COPY package*.json ./
 COPY tsconfig*.json ./
-# Instala dependências
-RUN npm install
+
+# Instala todas as dependências (incluindo devDependencies para compilar o TS)
+RUN npm ci
 
 # Copia o código-fonte
 COPY . .
@@ -24,17 +25,20 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-# Copia apenas os arquivos necessários da build anterior
-COPY --from=builder /app/dist ./dist
+# Copia os manifestos para instalar apenas prod-deps
 COPY package*.json ./
-# Instala apenas as dependências de produção
-RUN npm install --omit=dev
 
-# Define variáveis padrão
+# Instala somente dependências de produção de forma rápida
+RUN npm ci --omit=dev && npm cache clean --force
+
+# Copia apenas o código compilado da etapa de build
+COPY --from=builder /app/dist ./dist
+
+# Define variáveis de ambiente
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# Expõe a porta da aplicação
+# Expõe a porta do servidor
 EXPOSE 3000
 
 # Comando de inicialização

@@ -4,6 +4,7 @@ import ExcelJS from "exceljs";
 import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
+
 dotenv.config();
 const router = Router();
 
@@ -21,6 +22,19 @@ function formatarDataHoraBrasileira(data: string | null) {
   const d = new Date(data);
   if (isNaN(d.getTime())) return data;
   return d.toLocaleString("pt-BR", { hour12: false });
+}
+
+// Converte qualquer entrada em número válido independente da estrutura
+function extrairValor(valorPrincipal: any, valorFallback: any = 0): number {
+  let val = valorPrincipal !== undefined && valorPrincipal !== null && valorPrincipal !== "" ? valorPrincipal : valorFallback;
+  
+  if (typeof val === "number") return isNaN(val) ? 0 : val;
+  if (typeof val === "string") {
+    const limpo = val.replace(/\./g, "").replace(",", ".");
+    const num = parseFloat(limpo);
+    return isNaN(num) ? 0 : num;
+  }
+  return 0;
 }
 
 router.post("/boletos/geral", async (req: Request, res: Response) => {
@@ -74,30 +88,30 @@ router.post("/boletos/geral", async (req: Request, res: Response) => {
       "CNPJ",
       "Email",
       "Telefone",
-      "Status",              // <-- (Mensagem virou Status)
+      "Status",
       "Tipo",
       "Data Criação",
       "Data Pagamento",
-      "Valor",               // <-- Valor (Split) virou Valor
-      "Taxa",
-      "Vencimento"
+      "Valor Bruto",        // Coluna 9
+      "Valor Líquido",      // Coluna 10
+      "Taxa",               // Coluna 11
+      "Vencimento"          // Coluna 12
     ];
 
     const headerRow = sheet.addRow(header);
     headerRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
     headerRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "4472C4" } };
 
-    // Ativar filtros automáticos
     sheet.autoFilter = {
       from: 'A1',
-      to: 'K1'
+      to: 'L1'
     };
 
     // ============================
     // 4. SOMATÓRIOS
     // ============================
-    let totalRecebido = 0;
-    let totalAReceber = 0;
+    let totalRecebidoLiquido = 0;
+    let totalAReceberBruto = 0;
 
     // ============================
     // 5. ADICIONAR LINHAS
@@ -105,45 +119,63 @@ router.post("/boletos/geral", async (req: Request, res: Response) => {
     dados.forEach((t: any) => {
       const empresa = t.Customer ?? {};
       const boleto = t.PaymentObject ?? {};
-      const split = t.Splits?.[0] ?? null;
 
-      const valor = Number(split?.Amount ?? 0);
+      // Extração direta sem condicional entre Amount e TaxValue
+      const valorBruto = extrairValor(t.Amount, boleto.Amount);
+      const taxa = extrairValor(t.TaxValue, boleto.TaxValue);
+      
+      // Se NetValue não vier explicitamente preenchido na transação Negocial, calcula Bruto - Taxa
+      let valorLiquido = extrairValor(t.NetValue, boleto.NetValue);
+      if (valorLiquido === 0 && valorBruto > 0) {
+        valorLiquido = valorBruto - taxa;
+      }
 
-      // Status simplificado
+      const tipoAplicacao = t.Application ?? t.PaymentMethod?.Name ?? "N/A";
+
+      // Status Financeiro
       let statusFinanceiro = "";
-      if (t.Message === "Liberado") statusFinanceiro = "A Receber";
-      else if (t.Message === "Autorizado") statusFinanceiro = "Pago";
-      else statusFinanceiro = t.Message;
+      if (t.Message === "Processamento") {
+        statusFinanceiro = "A Receber";
+      } else if (t.Message === "Liberado") {
+        statusFinanceiro = "Liberado";
+      } else if (t.Message === "Autorizado") {
+        statusFinanceiro = "Pago";
+      } else {
+        statusFinanceiro = t.Message ?? "N/A";
+      }
 
-      if (statusFinanceiro === "Pago") totalRecebido += valor;
-      if (statusFinanceiro === "A Receber") totalAReceber += valor;
+      // Somatórios
+      if (statusFinanceiro === "Pago") totalRecebidoLiquido += valorLiquido;
+      if (statusFinanceiro === "A Receber") totalAReceberBruto += valorBruto;
 
       const row = sheet.addRow([
         empresa.Name ?? "",
         empresa.Identity ?? "",
         empresa.Email ?? "",
         empresa.Phone ?? "",
-        statusFinanceiro,               // <-- Coluna Status
-        t.Application ?? "",
+        statusFinanceiro,
+        tipoAplicacao,
         formatarDataBrasileira(t.CreatedDate),
         formatarDataHoraBrasileira(t.CreatedDateTime),
-        valor,                          // <-- Valor (número real)
-        t.TaxValue ?? "",
+        valorBruto,                          // Coluna 9
+        valorLiquido,                        // Coluna 10
+        taxa,                                // Coluna 11
         formatarDataBrasileira(boleto.DueDate)
       ]);
 
-      // 🎯 FORMATAÇÃO MONETÁRIA
-      row.getCell(9).numFmt = "R$ #,##0.00";   // Valor
-      row.getCell(10).numFmt = "R$ #,##0.00";  // Taxa
+      // Formatação Monetária nas células
+      row.getCell(9).numFmt = "R$ #,##0.00";
+      row.getCell(10).numFmt = "R$ #,##0.00";
+      row.getCell(11).numFmt = "R$ #,##0.00";
     });
 
     // ============================
     // 6. RESUMO
     // ============================
-    const totalRecebidoRow = sheet.addRow(["TOTAL RECEBIDO (Pago)", totalRecebido]);
+    const totalRecebidoRow = sheet.addRow(["TOTAL RECEBIDO (Líquido / Pago)", totalRecebidoLiquido]);
     totalRecebidoRow.getCell(2).numFmt = "R$ #,##0.00";
 
-    const totalAReceberRow = sheet.addRow(["TOTAL A RECEBER (Liberado)", totalAReceber]);
+    const totalAReceberRow = sheet.addRow(["TOTAL A RECEBER (Bruto / Processamento)", totalAReceberBruto]);
     totalAReceberRow.getCell(2).numFmt = "R$ #,##0.00";
 
     sheet.columns.forEach((col) => (col.width = 22));
@@ -152,7 +184,7 @@ router.post("/boletos/geral", async (req: Request, res: Response) => {
     // 7. SALVAR ARQUIVO
     // ============================
     const outputDir = path.join(__dirname, "../../uploads");
-    if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir);
+    if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
     const fileName = `relatorio_boletos_${Date.now()}.xlsx`;
     const filePath = path.join(outputDir, fileName);
