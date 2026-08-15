@@ -4,7 +4,126 @@ import dotenv from "dotenv";
 dotenv.config();
 const router = Router();
 
+router.post("/despesa-diaria", async (req: Request, res: Response) => {
+  try {
+    const { dados } = req.body; // data_inicio foi removido, pois a lista já vem filtrada
 
+    if (!Array.isArray(dados) || dados.length === 0) {
+      return res.status(400).json({
+        error: "dados deve ser uma lista e não pode estar vazia.",
+      });
+    }
+
+    // ────────────────────────────────────────────
+    // 🎯 FASE DE PREPARAÇÃO DA DATA
+    // ────────────────────────────────────────────
+    // Pega a data da primeira despesa para usar no título e no nome do arquivo
+    const dataReferencia = dados[0].date_despesa; // Ex: "2026-08-14"
+    let dataFormatadaTitulo = "";
+    let nomeArquivo = "data_indefinida";
+
+    if (dataReferencia) {
+      const [ano, mes, dia] = dataReferencia.split("-").map(Number);
+      const dataUTC = new Date(Date.UTC(ano, mes - 1, dia));
+      
+      dataFormatadaTitulo = dataUTC.toLocaleDateString("pt-BR"); // Fica "14/08/2026"
+      nomeArquivo = `${dia}_${mes}_${ano}`;
+    }
+
+    // ────────────────────────────────────────────
+    // 📊 CRIAR EXCEL 
+    // ────────────────────────────────────────────
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet("Despesas Diárias");
+
+    // Mantida a mesma estrutura de 5 colunas
+    const headers = [
+      { header: "Data", key: "data", width: 15 },
+      { header: "Fornecedor", key: "fornecedor", width: 25 },
+      { header: "Descrição", key: "descricao", width: 35 },
+      { header: "Pagamento", key: "categoria_pagamento", width: 20 },
+      { header: "Valor (R$)", key: "valor", width: 15 }, 
+    ];
+
+    sheet.columns = headers;
+
+    // 1. TÍTULO (Linha 1)
+    sheet.mergeCells("A1:E1");
+    const titulo = sheet.getCell("A1");
+    titulo.value = `Despesas do Dia ${dataFormatadaTitulo}`;
+    titulo.font = { bold: true, size: 18 };
+    titulo.alignment = { horizontal: "center" };
+
+    // 2. CABEÇALHOS (Linha 2)
+    const headerRow = sheet.getRow(2);
+    headerRow.values = headers.map(h => h.header);
+
+    headerRow.eachCell((cell) => {
+      cell.font = { bold: true };
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FFDDDDDD" },
+      };
+    });
+
+    // 3. INSERIR DADOS (A partir da Linha 3)
+    let totalValor = 0; 
+
+    // Como já está filtrado, percorremos todos os dados recebidos
+    dados.forEach((item) => {
+      let dataFormatada = "-";
+      
+      if (item.date_despesa) {
+        const [year, month, day] = item.date_despesa.split("-").map(Number);
+        const dataUTC = new Date(Date.UTC(year, month - 1, day));
+        dataFormatada = dataUTC.toLocaleDateString("pt-BR");
+      }
+      
+      const valorItem = Number(item.valor) || 0;
+      totalValor += valorItem; 
+
+      sheet.addRow({
+        data: dataFormatada,
+        descricao: item.descricao || "-",
+        valor: valorItem,
+        categoria_pagamento: item.categoria_pagamento || "-",
+        fornecedor: item.fornecedor || "-",
+      });
+    });
+
+    // 4. INSERIR A LINHA DE TOTAL AO FINAL
+    const totalRow = sheet.addRow({
+      data: "",
+      descricao: "TOTAL",
+      valor: totalValor,
+      categoria_pagamento: "",
+      fornecedor: "",
+    });
+
+    // Formata a linha de total em negrito
+    totalRow.font = { bold: true };
+
+    // Formata a coluna de valores como moeda
+    sheet.getColumn("valor").numFmt = "R$ #,##0.00";
+
+    const buffer = await workbook.xlsx.writeBuffer();
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=despesas_diarias_${nomeArquivo}.xlsx`
+    );
+
+    return res.send(buffer);
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Erro ao gerar relatório de despesas diário." });
+  }
+});
 router.post("/despesa-mensal", async (req: Request, res: Response) => {
   try {
     const { dados, data_inicio } = req.body;
@@ -20,7 +139,7 @@ router.post("/despesa-mensal", async (req: Request, res: Response) => {
     }
 
     // ────────────────────────────────────────────
-    // 🎯 FASE DE FILTRAGEM (Mantido o código que está funcionando)
+    // 🎯 FASE DE FILTRAGEM 
     // ────────────────────────────────────────────
 
     // 1. EXTRAIR APENAS MÊS E ANO DE data_inicio
@@ -34,7 +153,6 @@ router.post("/despesa-mensal", async (req: Request, res: Response) => {
     const dataParaNomeMes = new Date(Date.UTC(anoFiltro, mesFiltro - 1, 1));
     const nomeMes = dataParaNomeMes.toLocaleString("pt-BR", { month: "long" });
 
-
     // 2. FILTRAR DADOS: Compara APENAS Ano e Mês
     const despesasFiltradas = dados.filter((item) => {
       if (!item.date_despesa) return false;
@@ -47,37 +165,36 @@ router.post("/despesa-mensal", async (req: Request, res: Response) => {
       return anoDesp === anoFiltro && mesDesp === mesFiltro;
     });
 
-
     // ────────────────────────────────────────────
-    // 📊 CRIAR EXCEL (CORRIGIDO A INSERÇÃO DE CABEÇALHOS)
+    // 📊 CRIAR EXCEL 
     // ────────────────────────────────────────────
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet("Despesas");
 
-    // Definição das colunas/chaves
+    // 🟢 REMOVIDAS as colunas solicitadas (Ficaram apenas 5)
     const headers = [
       { header: "Data", key: "data", width: 15 },
-      { header: "Descrição", key: "descricao", width: 40 },
+      { header: "Fornecedor", key: "fornecedor", width: 25 },
+      { header: "Descrição", key: "descricao", width: 35 },
+      { header: "Pagamento", key: "categoria_pagamento", width: 20 },
       { header: "Valor (R$)", key: "valor", width: 15 }, 
+      
+      
     ];
 
-    sheet.columns = headers; // Define a estrutura do ExcelJS
+    sheet.columns = headers;
 
-    // 1. TÍTULO (Linha 1)
-    sheet.mergeCells("A1:C1");
+    // 🟢 AJUSTADO para mesclar apenas as 5 colunas (A até E)
+    sheet.mergeCells("A1:E1");
     const titulo = sheet.getCell("A1");
-    // Ajustado para o formato solicitado: Despesas Mensais Dezembro 2025
     titulo.value = `Despesas Mensais ${nomeMes} ${anoFiltro}`;
     titulo.font = { bold: true, size: 18 };
     titulo.alignment = { horizontal: "center" };
 
-
     // 2. CABEÇALHOS (Linha 2)
-    // 🟢 CORREÇÃO: Forçar a inserção dos headers na Linha 2
     const headerRow = sheet.getRow(2);
     headerRow.values = headers.map(h => h.header);
 
-    // Formatação da Linha 2 (agora aplicada à linha que contém os headers)
     headerRow.eachCell((cell) => {
       cell.font = { bold: true };
       cell.fill = {
@@ -88,30 +205,35 @@ router.post("/despesa-mensal", async (req: Request, res: Response) => {
     });
 
     // 3. INSERIR DADOS (A partir da Linha 3)
-    let totalValor = 0; // 🟢 Variável acumuladora para o total
+    let totalValor = 0; 
 
     despesasFiltradas.forEach((item) => {
-      // Cria a data em UTC a partir das partes para evitar o deslocamento do fuso.
       const [year, month, day] = item.date_despesa.split("-").map(Number);
       const dataUTC = new Date(Date.UTC(year, month - 1, day));
       
       const dataFormatada = dataUTC.toLocaleDateString("pt-BR");
       const valorItem = Number(item.valor) || 0;
 
-      totalValor += valorItem; // 🟢 Acumula o valor de cada item
+      totalValor += valorItem; 
 
+      // 🟢 AJUSTADO: Removidos os campos extras na inserção
       sheet.addRow({
         data: dataFormatada,
-        descricao: item.descricao || "",
+        descricao: item.descricao || "-",
         valor: valorItem,
+        categoria_pagamento: item.categoria_pagamento || "-",
+        fornecedor: item.fornecedor || "-",
       });
     });
 
-    // 🟢 4. INSERIR A LINHA DE TOTAL AO FINAL
+    // 4. INSERIR A LINHA DE TOTAL AO FINAL
+    // 🟢 AJUSTADO: Removidos os campos extras do total
     const totalRow = sheet.addRow({
       data: "",
       descricao: "TOTAL",
       valor: totalValor,
+      categoria_pagamento: "",
+      fornecedor: "",
     });
 
     // Formata a linha de total em negrito
