@@ -4,6 +4,7 @@ import ExcelJS from "exceljs";
 import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
+
 dotenv.config();
 const router = Router();
 
@@ -64,96 +65,170 @@ router.post("/boletos", async (req: Request, res: Response) => {
       return res.status(200).json({ aviso: "Nenhum boleto encontrado." });
     }
 
+    // Dados da Empresa (extraídos da primeira ocorrência do retorno)
+    const primeiraEmpresa = dados[0]?.Customer ?? {};
+    const nomeEmpresa = primeiraEmpresa.Name || "EMPRESA NÃO IDENTIFICADA";
+    const cnpjEmpresa = primeiraEmpresa.Identity || identity;
+
     // ============================
     // 3. CONFIGURAR PLANILHA
     // ============================
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet("Boletos");
 
+    // --- CABEÇALHO INSTITUCIONAL ---
+    // Linha 1: Título do Sindicato
+    sheet.mergeCells("A1:L1");
+    const titleCell = sheet.getCell("A1");
+    titleCell.value = "SENALBA MG - SINDICATO DOS EMPREGADOS";
+    titleCell.font = { name: "Arial", size: 14, bold: true, color: { argb: "FFFFFFFF" } };
+    titleCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "4B39EF" } };
+    titleCell.alignment = { horizontal: "center", vertical: "middle" };
+    sheet.getRow(1).height = 30;
+
+    // Linha 2: Razão Social e CNPJ
+    sheet.mergeCells("A2:L2");
+    const subTitleCell = sheet.getCell("A2");
+    subTitleCell.value = `RELATÓRIO DE CONTRIBUIÇÕES: ${nomeEmpresa.toUpperCase()} | CNPJ: ${cnpjEmpresa}`;
+    subTitleCell.font = { name: "Arial", size: 11, bold: true, color: { argb: "FF1E293B" } };
+    subTitleCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2E8F0" } };
+    subTitleCell.alignment = { horizontal: "center", vertical: "middle" };
+    sheet.getRow(2).height = 22;
+
+    // Linha 3: Informações de Período e Geração
+    sheet.mergeCells("A3:L3");
+    const infoCell = sheet.getCell("A3");
+    infoCell.value = `Período: ${formatarDataBrasileira(dataInicial)} até ${formatarDataBrasileira(dataFinal)} ${
+      application ? `| Filtro: ${application}` : "| Todos os Acordos"
+    } | Gerado em: ${new Date().toLocaleString("pt-BR")}`;
+    infoCell.font = { name: "Arial", size: 9, italic: true, color: { argb: "FF64748B" } };
+    infoCell.alignment = { horizontal: "center", vertical: "middle" };
+    sheet.getRow(3).height = 18;
+
+    // Linha 4: Espaço em branco
+    sheet.addRow([]);
+
+    // --- COLUNAS DA TABELA (Linha 5) ---
     const header = [
       "Empresa",
       "CNPJ",
       "Email",
       "Telefone",
-      "Status",              // <-- (Mensagem virou Status)
-      "Tipo",
+      "Status",
+      "Tipo de Contribuição",
       "Data Criação",
       "Data Pagamento",
-      "Valor",               // <-- Valor (Split) virou Valor
+      "Valor Bruto",
       "Taxa",
+      "Valor Líquido",
       "Vencimento"
     ];
 
     const headerRow = sheet.addRow(header);
-    headerRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
-    headerRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "4472C4" } };
+    headerRow.height = 24;
+    headerRow.eachCell((cell) => {
+      cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1E293B" } };
+      cell.alignment = { horizontal: "center", vertical: "middle" };
+    });
 
-    // Ativar filtros automáticos
+    // Filtros automáticos na linha 5
     sheet.autoFilter = {
-      from: 'A1',
-      to: 'K1'
+      from: "A5",
+      to: "L5"
     };
 
     // ============================
     // 4. SOMATÓRIOS
     // ============================
-    let totalRecebido = 0;
-    let totalAReceber = 0;
+    let totalBruto = 0;
+    let totalTaxas = 0;
+    let totalLiquido = 0;
 
     // ============================
-    // 5. ADICIONAR LINHAS
+    // 5. ADICIONAR LINHAS DE DADOS
+    // ============================
+    // ============================
+    // 5. ADICIONAR LINHAS DE DADOS
     // ============================
     dados.forEach((t: any) => {
       const empresa = t.Customer ?? {};
       const boleto = t.PaymentObject ?? {};
-      const split = t.Splits?.[0] ?? null;
 
-      const valor = Number(split?.Amount ?? 0);
+      // Pega o valor bruto direto do campo Amount (com fallback para boleto.Amount ou 0)
+      const valorBruto = Number(t.Amount ?? boleto.Amount ?? 0);
+      const taxa = Number(t.TaxValue ?? 0);
+      const valorLiquido = valorBruto - taxa; // Valor Líquido = Bruto - Taxa
 
-      // Status simplificado
+      // Status financeiro
       let statusFinanceiro = "";
       if (t.Message === "Liberado") statusFinanceiro = "A Receber";
       else if (t.Message === "Autorizado") statusFinanceiro = "Pago";
-      else statusFinanceiro = t.Message;
+      else statusFinanceiro = t.Message || "-";
 
-      if (statusFinanceiro === "Pago") totalRecebido += valor;
-      if (statusFinanceiro === "A Receber") totalAReceber += valor;
+      totalBruto += valorBruto;
+      totalTaxas += taxa;
+      totalLiquido += valorLiquido;
 
       const row = sheet.addRow([
         empresa.Name ?? "",
         empresa.Identity ?? "",
         empresa.Email ?? "",
         empresa.Phone ?? "",
-        statusFinanceiro,               // <-- Coluna Status
+        statusFinanceiro,
         t.Application ?? "",
         formatarDataBrasileira(t.CreatedDate),
         formatarDataHoraBrasileira(t.CreatedDateTime),
-        valor,                          // <-- Valor (número real)
-        t.TaxValue ?? "",
+        valorBruto,     // Coluna I (9): Amount
+        taxa,           // Coluna J (10): TaxValue
+        valorLiquido,   // Coluna K (11): Valor Líquido
         formatarDataBrasileira(boleto.DueDate)
       ]);
 
-      // 🎯 FORMATAÇÃO MONETÁRIA
-      row.getCell(9).numFmt = "R$ #,##0.00";   // Valor
-      row.getCell(10).numFmt = "R$ #,##0.00";  // Taxa
+      // Formatação monetária R$
+      row.getCell(9).numFmt = "R$ #,##0.00";
+      row.getCell(10).numFmt = "R$ #,##0.00";
+      row.getCell(11).numFmt = "R$ #,##0.00";
+      row.alignment = { vertical: "middle" };
     });
 
     // ============================
-    // 6. RESUMO
+    // 6. LINHAS DE RESUMO / TOTAIS
     // ============================
-    const totalRecebidoRow = sheet.addRow(["TOTAL RECEBIDO (Pago)", totalRecebido]);
-    totalRecebidoRow.getCell(2).numFmt = "R$ #,##0.00";
+    sheet.addRow([]); // Espaço
 
-    const totalAReceberRow = sheet.addRow(["TOTAL A RECEBER (Liberado)", totalAReceber]);
-    totalAReceberRow.getCell(2).numFmt = "R$ #,##0.00";
+    const totalRow = sheet.addRow([
+      "TOTAIS ACUMULADOS", "", "", "", "", "", "", "",
+      totalBruto,
+      totalTaxas,
+      totalLiquido,
+      ""
+    ]);
 
-    sheet.columns.forEach((col) => (col.width = 22));
+    totalRow.height = 22;
+    sheet.mergeCells(`A${totalRow.number}:H${totalRow.number}`);
+
+    totalRow.getCell(1).font = { name: "Arial", size: 10, bold: true };
+    totalRow.getCell(1).alignment = { horizontal: "right", vertical: "middle" };
+
+    [9, 10, 11].forEach((colIdx) => {
+      const cell = totalRow.getCell(colIdx);
+      cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FF059669" } };
+      cell.numFmt = "R$ #,##0.00";
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFECFDF5" } };
+      cell.alignment = { vertical: "middle" };
+    });
+
+    // Ajuste de largura das colunas
+    sheet.columns.forEach((col) => {
+      col.width = 24;
+    });
 
     // ============================
-    // 7. SALVAR ARQUIVO
+    // 7. SALVAR E RETORNAR
     // ============================
     const outputDir = path.join(__dirname, "../../uploads");
-    if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir);
+    if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
     const fileName = `relatorio_boletos_${Date.now()}.xlsx`;
     const filePath = path.join(outputDir, fileName);
@@ -161,12 +236,14 @@ router.post("/boletos", async (req: Request, res: Response) => {
     await workbook.xlsx.writeFile(filePath);
 
     return res.download(filePath, fileName, () => {
-      fs.unlinkSync(filePath);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
     });
 
   } catch (error) {
-    console.error(error);
-    return res.status(500).json({ error: "Erro ao gerar relatório." });
+    console.error("Erro na rota /boletos:", error);
+    return res.status(500).json({ error: "Erro ao gerar relatório de boletos." });
   }
 });
 
