@@ -77,8 +77,7 @@ router.post("/boletos", async (req: Request, res: Response) => {
     const sheet = workbook.addWorksheet("Boletos");
 
     // --- CABEÇALHO INSTITUCIONAL ---
-    // Linha 1: Título do Sindicato
-    sheet.mergeCells("A1:L1");
+    sheet.mergeCells("A1:M1");
     const titleCell = sheet.getCell("A1");
     titleCell.value = "SENALBA MG - SINDICATO DOS EMPREGADOS";
     titleCell.font = { name: "Arial", size: 14, bold: true, color: { argb: "FFFFFFFF" } };
@@ -86,8 +85,7 @@ router.post("/boletos", async (req: Request, res: Response) => {
     titleCell.alignment = { horizontal: "center", vertical: "middle" };
     sheet.getRow(1).height = 30;
 
-    // Linha 2: Razão Social e CNPJ
-    sheet.mergeCells("A2:L2");
+    sheet.mergeCells("A2:M2");
     const subTitleCell = sheet.getCell("A2");
     subTitleCell.value = `RELATÓRIO DE CONTRIBUIÇÕES: ${nomeEmpresa.toUpperCase()} | CNPJ: ${cnpjEmpresa}`;
     subTitleCell.font = { name: "Arial", size: 11, bold: true, color: { argb: "FF1E293B" } };
@@ -95,8 +93,7 @@ router.post("/boletos", async (req: Request, res: Response) => {
     subTitleCell.alignment = { horizontal: "center", vertical: "middle" };
     sheet.getRow(2).height = 22;
 
-    // Linha 3: Informações de Período e Geração
-    sheet.mergeCells("A3:L3");
+    sheet.mergeCells("A3:M3");
     const infoCell = sheet.getCell("A3");
     infoCell.value = `Período: ${formatarDataBrasileira(dataInicial)} até ${formatarDataBrasileira(dataFinal)} ${
       application ? `| Filtro: ${application}` : "| Todos os Acordos"
@@ -105,7 +102,7 @@ router.post("/boletos", async (req: Request, res: Response) => {
     infoCell.alignment = { horizontal: "center", vertical: "middle" };
     sheet.getRow(3).height = 18;
 
-    // Linha 4: Espaço em branco
+    // Linha de espaçamento
     sheet.addRow([]);
 
     // --- COLUNAS DA TABELA (Linha 5) ---
@@ -114,13 +111,14 @@ router.post("/boletos", async (req: Request, res: Response) => {
       "CNPJ",
       "Email",
       "Telefone",
-      "Status",
-      "Tipo de Contribuição",
+      "Status Transação",   // Mapeado com a tabela Safe2Pay
+      "Tipo Contribuição",
       "Data Criação",
       "Data Pagamento",
-      "Valor Bruto",
-      "Taxa",
-      "Valor Líquido",
+      "Valor Cobrado",       // Amount (Valor nominal do boleto)
+      "Valor Pago",          // Preenchido apenas se Pago (Status 3)
+      "Taxa",                // TaxValue
+      "Valor Líquido",       // (Valor Pago - Taxa) ou 0 se não pago
       "Vencimento"
     ];
 
@@ -132,22 +130,35 @@ router.post("/boletos", async (req: Request, res: Response) => {
       cell.alignment = { horizontal: "center", vertical: "middle" };
     });
 
-    // Filtros automáticos na linha 5
     sheet.autoFilter = {
       from: "A5",
-      to: "L5"
+      to: "M5"
+    };
+
+    // MAPA DE STATUS TRANSACIONAL SAFE2PAY
+    const MAPA_STATUS_SAFE2PAY: Record<number | string, string> = {
+      1: "Pendente",
+      2: "Processamento",
+      3: "Autorizado (Pago)",
+      5: "Em disputa",
+      6: "Estornado",
+      7: "Baixado",
+      8: "Recusado",
+      11: "Liberado (Aguardando Pagamento)",
+      12: "Em cancelamento",
+      13: "Chargeback",
+      14: "Pré-Autorizado",
+      15: "Devolução de Contestação"
     };
 
     // ============================
-    // 4. SOMATÓRIOS
+    // 4. SOMATÓRIOS SEPARADOS
     // ============================
-    let totalBruto = 0;
+    let totalCobrado = 0;
+    let totalEfetivamentePago = 0;
     let totalTaxas = 0;
     let totalLiquido = 0;
 
-    // ============================
-    // 5. ADICIONAR LINHAS DE DADOS
-    // ============================
     // ============================
     // 5. ADICIONAR LINHAS DE DADOS
     // ============================
@@ -155,19 +166,23 @@ router.post("/boletos", async (req: Request, res: Response) => {
       const empresa = t.Customer ?? {};
       const boleto = t.PaymentObject ?? {};
 
-      // Pega o valor bruto direto do campo Amount (com fallback para boleto.Amount ou 0)
-      const valorBruto = Number(t.Amount ?? boleto.Amount ?? 0);
+      // Código do status transacional vindo do Safe2Pay
+      const statusCode = Number(t.TransactionStatus?.Code ?? t.TransactionStatusId ?? t.TransactionStatus ?? 0);
+      const statusDescricao = MAPA_STATUS_SAFE2PAY[statusCode] || t.Message || "Outro";
+
+      // Amount = Valor nominal do boleto emitido
+      const valorCobrado = Number(t.Amount ?? boleto.Amount ?? 0);
       const taxa = Number(t.TaxValue ?? 0);
-      const valorLiquido = valorBruto - taxa; // Valor Líquido = Bruto - Taxa
 
-      // Status financeiro
-      let statusFinanceiro = "";
-      if (t.Message === "Liberado") statusFinanceiro = "A Receber";
-      else if (t.Message === "Autorizado") statusFinanceiro = "Pago";
-      else statusFinanceiro = t.Message || "-";
+      // REGRA DE NEGÓCIO: Só é considerado "Valor Pago" se o status for 3 (Autorizado)
+      const foiPago = statusCode === 3 || t.Message === "Autorizado";
+      const valorPago = foiPago ? valorCobrado : 0;
+      const valorLiquido = foiPago ? (valorPago - taxa) : 0;
 
-      totalBruto += valorBruto;
-      totalTaxas += taxa;
+      // Acumula somatórios
+      totalCobrado += valorCobrado;
+      totalEfetivamentePago += valorPago;
+      totalTaxas += foiPago ? taxa : 0;
       totalLiquido += valorLiquido;
 
       const row = sheet.addRow([
@@ -175,51 +190,66 @@ router.post("/boletos", async (req: Request, res: Response) => {
         empresa.Identity ?? "",
         empresa.Email ?? "",
         empresa.Phone ?? "",
-        statusFinanceiro,
+        statusDescricao,
         t.Application ?? "",
         formatarDataBrasileira(t.CreatedDate),
-        formatarDataHoraBrasileira(t.CreatedDateTime),
-        valorBruto,     // Coluna I (9): Amount
-        taxa,           // Coluna J (10): TaxValue
-        valorLiquido,   // Coluna K (11): Valor Líquido
+        foiPago ? formatarDataHoraBrasileira(t.PaymentDate || t.CreatedDateTime) : "-",
+        valorCobrado,       // Coluna I (9): Amount
+        valorPago,          // Coluna J (10): Valor Efetivamente Pago
+        taxa,               // Coluna K (11): Taxa
+        valorLiquido,       // Coluna L (12): Valor Líquido Recebido
         formatarDataBrasileira(boleto.DueDate)
       ]);
 
-      // Formatação monetária R$
-      row.getCell(9).numFmt = "R$ #,##0.00";
-      row.getCell(10).numFmt = "R$ #,##0.00";
-      row.getCell(11).numFmt = "R$ #,##0.00";
+      // Formatação monetária R$ para as colunas numéricas (I, J, K, L)
+      [9, 10, 11, 12].forEach((colIdx) => {
+        row.getCell(colIdx).numFmt = "R$ #,##0.00";
+      });
+
+      // Destaque visual suave para boletos pagos vs pendentes/baixados
+      if (foiPago) {
+        row.getCell(5).font = { bold: true, color: { argb: "FF059669" } }; // Verde
+      } else if (statusCode === 7 || statusCode === 6) {
+        row.getCell(5).font = { color: { argb: "FFDC2626" } }; // Vermelho para Baixado/Estornado
+      }
+
       row.alignment = { vertical: "middle" };
     });
 
     // ============================
-    // 6. LINHAS DE RESUMO / TOTAIS
+    // 6. RESUMO DE TOTAIS NO RODAPÉ
     // ============================
-    sheet.addRow([]); // Espaço
+    sheet.addRow([]); // Espaçamento
 
     const totalRow = sheet.addRow([
-      "TOTAIS ACUMULADOS", "", "", "", "", "", "", "",
-      totalBruto,
+      "TOTAIS DO PERÍODO", "", "", "", "", "", "", "",
+      totalCobrado,
+      totalEfetivamentePago,
       totalTaxas,
       totalLiquido,
       ""
     ]);
 
-    totalRow.height = 22;
+    totalRow.height = 24;
     sheet.mergeCells(`A${totalRow.number}:H${totalRow.number}`);
 
     totalRow.getCell(1).font = { name: "Arial", size: 10, bold: true };
     totalRow.getCell(1).alignment = { horizontal: "right", vertical: "middle" };
 
-    [9, 10, 11].forEach((colIdx) => {
+    // Estilização das colunas financeiras de resumo
+    [9, 10, 11, 12].forEach((colIdx) => {
       const cell = totalRow.getCell(colIdx);
-      cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FF059669" } };
+      cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FF0F172A" } };
       cell.numFmt = "R$ #,##0.00";
-      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFECFDF5" } };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2E8F0" } };
       cell.alignment = { vertical: "middle" };
     });
 
-    // Ajuste de largura das colunas
+    // Destaque verde especificamente para o Total Líquido Entrado
+    totalRow.getCell(12).font = { name: "Arial", size: 10, bold: true, color: { argb: "FF059669" } };
+    totalRow.getCell(12).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFECFDF5" } };
+
+    // Ajuste da largura das colunas
     sheet.columns.forEach((col) => {
       col.width = 24;
     });
