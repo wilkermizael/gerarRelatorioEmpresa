@@ -1045,7 +1045,7 @@ router.post("/despesa-diaria-confronto", async (req: Request, res: Response) => 
     // ────────────────────────────────────────────
     // 3. SEÇÃO DE RESULTADO (DESPESAS - RECEITAS)
     // ────────────────────────────────────────────
-    const resultadoFinal = totalDespesas - totalReceitas;
+    const resultadoFinal = totalReceitas - totalDespesas;
     const rowResultado = sheet.addRow(["", "", "Resultado", "", "", "", resultadoFinal]);
     rowResultado.font = { bold: true };
 
@@ -1314,7 +1314,7 @@ router.post("/despesa-mensal-confronto", async (req: Request, res: Response) => 
     // ────────────────────────────────────────────
     // 3. RESULTADO DO MÊS (DESPESAS - RECEITAS)
     // ────────────────────────────────────────────
-    const resultadoFinal = totalDespesas - totalReceitas;
+    const resultadoFinal = totalReceitas - totalDespesas;
     const rowResultado = sheet.addRow(["", "", "Resultado do Mês", "", "", "", resultadoFinal]);
     rowResultado.font = { bold: true };
 
@@ -1569,7 +1569,7 @@ router.post("/despesa-mensal-confronto-classificado", async (req: Request, res: 
     sheet1.addRow([]);
 
     // 3. RESULTADO DO MÊS
-    const rowResultado = sheet1.addRow(["", "RESULTADO (DESPESAS - RECEITAS)", "", "", "", "", totalDespesas - totalReceitas]);
+    const rowResultado = sheet1.addRow(["", "RESULTADO (RECEITAS - DESPESAS)", "", "", "", "", totalReceitas - totalDespesas]);
     rowResultado.font = { bold: true };
 
     sheet1.getColumn("G").numFmt = "R$ #,##0.00";
@@ -1612,7 +1612,7 @@ router.post("/despesa-mensal-confronto-classificado", async (req: Request, res: 
     sheet2.addRow([]);
 
     // Resultado Final na Aba 2
-    const rowResFinalAba2 = sheet2.addRow(["RESULTADO DO MÊS", totalDespesas - totalReceitas]);
+    const rowResFinalAba2 = sheet2.addRow(["RESULTADO DO MÊS", totalReceitas - totalDespesas]);
     rowResFinalAba2.font = { bold: true };
 
     sheet2.getColumn("B").numFmt = "R$ #,##0.00";
